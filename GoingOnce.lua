@@ -452,6 +452,10 @@ local function Succeed(p)
 	Log("bought", p.key)
 	Finish(p)
 	Announce(p)
+	if p.kind == "commodity" and p.quantity == 1 and db.announce and not db.amountTip then
+		db.amountTip = true
+		Print("to buy more than one, right-click or Shift-click a trade good's Buy button.")
+	end
 	local at = Now()
 	bought[p.key] = at
 	PlaySound(SOUNDKIT.LOOT_WINDOW_COIN_SOUND)
@@ -801,7 +805,8 @@ function Slot:OnClick(mouseButton)
 	if not info or row.totalQuantity == 0 then
 		return
 	end
-	if mouseButton == "RightButton" then
+	-- Shift-click picks an amount at a vendor too.
+	if mouseButton == "RightButton" or IsShiftKeyDown() then
 		if info.isCommodity then
 			AskAmount(self)
 		end
@@ -871,7 +876,10 @@ function Slot:State()
 			return "...", false, { "Reading the auctions..." }
 		end
 		local label = amount > 1 and ("Buy " .. amount) or "Buy"
-		local lines = { amount > 1 and string.format("Buys %d, cheapest first.", amount) or "Buys one." }
+		local lines = {
+			amount > 1 and string.format("Buys %d, cheapest first.", amount) or "Buys one.",
+			HIGHLIGHT_FONT_COLOR:WrapTextInColorCode("Right-click or Shift-click to choose how many."),
+		}
 		local cost = row.minPrice * amount
 		if offer and Usable(offer) then
 			local total, enough = Estimate(offer, amount)
@@ -895,7 +903,6 @@ function Slot:State()
 		else
 			lines[#lines + 1] = "The next click confirms the price."
 		end
-		lines[#lines + 1] = "Right-click to change the amount."
 		return label, true, lines
 	end
 
@@ -1212,6 +1219,14 @@ end
 -- Settings: Options > AddOns > Going Once
 ---------------------------------------------------------------------------------------------------------------
 
+-- Blizzard's rows put their control 80 left of the row's centre (SettingsCheckboxControlMixin); these rows line up
+-- with that.
+local CONTROL_X = -80
+-- MoneyInputFrameTemplate: its three boxes and the gaps between them, and the left border its gold box draws 5
+-- outside itself (MoneyFrameEditBoxTemplate).
+local MONEY_WIDTH = 70 + 10 + 48 + 10 + 48
+local MONEY_BORDER = 5
+
 -- A settings row for an amount of money: the game's gold, silver and copper boxes where a slider would be. Its
 -- template is in GoingOnce.xml (only XML makes templates); Blizzard's settings list runs each row's code in
 -- securecallfunction, so this row cannot taint the rest of the panel.
@@ -1224,7 +1239,7 @@ function GoingOnceMoneyControlMixin:OnLoad()
 	-- Blizzard's money input names its boxes after itself ($parentGold), so each copy needs a name of its own.
 	moneyInputs = moneyInputs + 1
 	local input = CreateFrame("Frame", "GoingOnceMoneyInput" .. moneyInputs, self, "MoneyInputFrameTemplate")
-	input:SetPoint("LEFT", self, "CENTER", -80, 0)
+	input:SetPoint("LEFT", self, "CENTER", CONTROL_X + MONEY_BORDER, 0)
 	MoneyInputFrame_SetOnValueChangedFunc(input, function()
 		self:OnMoneyChanged()
 	end)
@@ -1265,6 +1280,31 @@ function GoingOnceMoneyControlMixin:OnMoneyChanged()
 	if setting:GetValue() ~= copper then
 		setting:SetValue(copper)
 	end
+end
+
+-- A settings row with a button, lined up with the other rows' controls and as wide as the money boxes: Blizzard's
+-- own button row (CreateSettingsButtonInitializer) starts its button 40 further right.
+GoingOnceButtonControlMixin = CreateFromMixins(SettingsListElementMixin)
+
+function GoingOnceButtonControlMixin:OnLoad()
+	SettingsListElementMixin.OnLoad(self)
+	local button = CreateFrame("Button", nil, self, "UIPanelButtonTemplate")
+	button:SetSize(MONEY_BORDER + MONEY_WIDTH, 22)
+	button:SetPoint("LEFT", self, "CENTER", CONTROL_X, 0)
+	button:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
+		GameTooltip_SetTitle(GameTooltip, self.data.name)
+		GameTooltip_AddNormalLine(GameTooltip, self.data.tooltip, true)
+		GameTooltip:Show()
+	end)
+	button:SetScript("OnLeave", GameTooltip_Hide)
+	self.Button = button
+end
+
+function GoingOnceButtonControlMixin:Init(initializer)
+	SettingsListElementMixin.Init(self, initializer)
+	self.Button:SetText(self.data.buttonText)
+	self.Button:SetScript("OnClick", self.data.onClick)
 end
 
 -- Rows go in through Settings.RegisterInitializer, as SkillUp Forever does: on Forever, rows inserted with
@@ -1313,19 +1353,20 @@ local function RegisterSettings()
 		)
 	)
 
-	Checkbox(
-		"announce",
-		"Say in chat what each purchase cost",
-		"A chat line after every purchase with the item and the price paid."
-	)
+	Checkbox("announce", "Chat line after buying", "A chat line after every purchase with the item and the price paid.")
 
 	Settings.RegisterInitializer(
 		category,
-		CreateSettingsButtonInitializer("Saved trade good amounts", "Forget", function()
-			wipe(db.amounts)
-			RefreshAll()
-			Print("trade goods buy one at a time again.")
-		end, "Every trade good goes back to buying one at a time.", false)
+		Settings.CreateElementInitializer("GoingOnceButtonControlTemplate", {
+			name = "Saved trade good amounts",
+			tooltip = "Every trade good goes back to buying one at a time. Right-click or Shift-click a trade good's Buy button to choose how many.",
+			buttonText = "Forget",
+			onClick = function()
+				wipe(db.amounts)
+				RefreshAll()
+				Print("trade goods buy one at a time again.")
+			end,
+		})
 	)
 
 	Settings.RegisterAddOnCategory(category)

@@ -6,4 +6,11 @@
 			<OnLoad method="OnLoad"/>
 		</Scripts>
 	</Frame>
+	<!-- A settings row with a button; GoingOnceButtonControlMixin fills it. -->
+	<Frame name="GoingOnceButtonControlTemplate" inherits="SettingsListElementTemplate" mixin="GoingOnceButtonControlMixin" virtual="true">
+		<Size x="280" y="26"/>
+		<Scripts>
+			<OnLoad method="OnLoad"/>
+		</Scripts>
+	</Frame>
 </Ui>

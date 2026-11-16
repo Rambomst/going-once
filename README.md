@@ -13,7 +13,7 @@ button, and the cheapest one is yours.
   least an amount you choose (50 gold to start with).
 - **Trade goods:** the button says `Buy`, or `Buy 20` for a stack. A click asks the auction house for the price.
   If every unit costs what the list shows, that click buys; if they cost more, the button shows the total and
-  the next click buys. Right-click the button to set how many to buy, remembered for each item.
+  the next click buys. Right-click or Shift-click the button to choose how many to buy, remembered for each item.
 - **The tooltip** says what a click will do. The button is greyed out when you can't afford it, when only your
   own auctions are left, or when the auctions only take bids.
 - **A chat line** after each purchase names the item and what you paid. If the auction house refuses a purchase,
@@ -35,7 +35,7 @@ In Options, AddOns, Going Once, or type `/goingonce`:
 - **Buy trade goods on one click** (on): when the price matches the list, the first click buys.
 - **Second click for gear from** (50 gold): gear at this price or more needs a second click. Type any amount in
   gold, silver and copper; leave it at 0 to never ask. Gear that costs more than the list shows always asks.
-- **Say in chat what each purchase cost** (on).
+- **Chat line after buying** (on): the item and what you paid.
 - **Saved trade good amounts:** Forget puts every trade good back to buying one at a time.
 
 ## "Internal auction error"
@@ -59,7 +59,8 @@ Everything the addon runs is in `GoingOnce.lua`, plus the settings row template 
 - **Purchases** (`BuyItem`, `BuyCommodity`, `Confirm`, `GiveUp`): the one purchase in flight, from the click to
   the auction house's answer.
 - **Slots**: a row's button in the Buy column, its label and tooltip (`Slot:State`).
-- **Settings**: the panel, and `GoingOnceMoneyControlMixin`, the gold, silver and copper row.
+- **Settings**: the panel, `GoingOnceMoneyControlMixin` (the gold, silver and copper row) and
+  `GoingOnceButtonControlMixin` (the Forget button, lined up with the other controls).
 
 The auction house rules it is built on:
 

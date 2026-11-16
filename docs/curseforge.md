@@ -13,8 +13,8 @@ confirmation. **Going Once** adds a **Buy** column to Blizzard's browse list ins
 
 - **Gear:** hover the row, click Buy, and the cheapest is yours at its buyout price. Gear at or above an amount you
   choose, and gear that now costs more than the list shows, asks for a second click first.
-- **Trade goods:** one click buys at the listed price. Right-click the button to set how many to buy, remembered for
-  each item. If the price went up, the button shows the total and waits for your second click.
+- **Trade goods:** one click buys at the listed price. Right-click or Shift-click the button to choose how many to
+  buy, remembered for each item. If the price went up, the button shows the total and waits for your second click.
 - **The tooltip** says what a click will do, and **a chat line** says what each purchase cost.
 
 Settings are in Options, AddOns, Going Once, or type **/goingonce**: buying trade goods on one click, the amount from

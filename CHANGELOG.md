@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.0
+
+- Shift-click a trade good's Buy button to choose how many to buy, as at a vendor; right-click still works. The
+  tooltip says so near the top, and the first time you buy a single trade good a chat line says how to buy more.
+- The settings page lines its options up, and the chat option is now called "Chat line after buying".
+
 ## v1.0.0
 
 First release.

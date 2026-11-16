@@ -824,6 +824,93 @@ test("the second-click amount takes gold, silver and copper in the settings pane
 	noAddonErrors(s)
 end)
 
+-- The rows of Going Once's page in Blizzard's settings panel, opened as /goingonce opens it.
+local function settingsRows(s)
+	local G = s.G
+	local opened
+	s.sim.impl["C_SettingsUtil.OpenSettingsPanel"] = function(categoryID)
+		opened = categoryID
+	end
+	s.sim:slash("/goingonce")
+	s.sim.run(function()
+		G.SettingsPanel:Show()
+		G.SettingsPanel:SelectCategory(G.Settings.GetCategory(opened))
+	end)
+	s.server:tick(0.1)
+	return G.SettingsPanel:GetSettingsList().ScrollBox:GetFrames()
+end
+
+local function leftX(region)
+	for i = 1, region:GetNumPoints() do
+		local point, _, relativePoint, x = region:GetPoint(i)
+		if point == "LEFT" then
+			return relativePoint .. " " .. x
+		end
+	end
+end
+
+test("the settings rows line up, and Forget clears the saved amounts", function()
+	local s = open({ saved = { GoingOnceDB = { amounts = { [2589] = 20 } } } })
+	local checkbox, money, forget
+	for _, row in ipairs(settingsRows(s)) do
+		if row.Checkbox then
+			checkbox = row.Checkbox
+		elseif row.Input then
+			money = row.Input
+		elseif row.Button and row.data and row.data.buttonText == "Forget" then
+			forget = row.Button
+		end
+	end
+	ok(checkbox and money and forget, "a checkbox, the money boxes and Forget")
+	eq(leftX(checkbox), "CENTER -80", "Blizzard's checkbox")
+	-- The gold box draws its border 5 outside itself.
+	eq(leftX(money), "CENTER -75", "money boxes start where the checkbox does")
+	eq(leftX(forget), "CENTER -80", "Forget starts there too")
+	eq(forget:GetWidth(), 191, "and is as wide as the money boxes")
+	s.sim:click(forget)
+	eq(s.sim:savedState().GoingOnceDB.amounts[2589], nil, "amounts forgotten")
+	ok(s:chat():find("trade goods buy one at a time again", 1, true), "says so: " .. s:chat())
+	noAddonErrors(s)
+end)
+
+test("Shift-click chooses a trade good's amount; it never buys gear", function()
+	local s = open()
+	s:hoverButton(118)
+	ok(s:tooltip():find("Right-click or Shift-click to choose how many.", 1, true), "tooltip says how: " .. s:tooltip())
+	s.sim.modifiers.shift = true
+	s:click(118)
+	s.sim.modifiers.shift = false
+	eq(s.server:count("StartCommoditiesPurchase"), 0, "no purchase")
+	local box = s.G.GameTooltip:GetOwner()
+	ok(box and box.SetNumeric, "amount box shown")
+	box:SetText("5")
+	s.sim:input(function()
+		box:GetScript("OnEnterPressed")(box)
+	end)
+	s.server:tick(0.2)
+	eq(s:label(118), "Buy 5", "amount kept")
+	s:hoverButton(2001)
+	s.sim.modifiers.shift = true
+	s:click(2001)
+	s.sim.modifiers.shift = false
+	eq(s.server:count("PlaceBid"), 0, "a Shift-click on gear does not buy")
+	noAddonErrors(s)
+end)
+
+test("the first single trade good bought tells once how to buy more", function()
+	local s = open()
+	s:hoverButton(118)
+	s:click(118)
+	local tip = "to buy more than one, right-click or Shift-click a trade good's Buy button."
+	ok(s:chat():find(tip, 1, true), "tip shown: " .. s:chat())
+	s.server:tick(1)
+	s:click(118)
+	local _, count = s:chat():gsub("to buy more than one", "")
+	eq(count, 1, "only once")
+	eq(s.sim:savedState().GoingOnceDB.amountTip, true, "remembered")
+	noAddonErrors(s)
+end)
+
 test("gear from an odd second-click amount up asks twice; cheaper buys at once", function()
 	local s = open({ saved = { GoingOnceDB = { confirmAbove = 1 * GOLD + 50 * SILVER + 20 } } })
 	s:hoverButton(2006)
