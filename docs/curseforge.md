@@ -27,6 +27,10 @@ alongside Auctionator.
 
 Auction & Economy.
 
+## Avatar
+
+`media/icon-400.png`, rendered from `media/icon.svg` with `rsvg-convert -w 400 -h 400 media/icon.svg -o media/icon-400.png`.
+
 ## Screenshots
 
 Owed: the browse list with the Buy buttons, a trade good showing its total, and the settings page, taken in game.

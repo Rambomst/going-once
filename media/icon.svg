@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" width="400" height="400">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7a2a26"/>
+      <stop offset="1" stop-color="#2a0c0e"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff0a0"/>
+      <stop offset="0.55" stop-color="#ffd100"/>
+      <stop offset="1" stop-color="#e09a00"/>
+    </linearGradient>
+    <linearGradient id="goldSide" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e09a00"/>
+      <stop offset="0.45" stop-color="#ffd100"/>
+      <stop offset="0.7" stop-color="#fff0a0"/>
+      <stop offset="1" stop-color="#e09a00"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbf5e6"/>
+      <stop offset="1" stop-color="#e6d8b8"/>
+    </linearGradient>
+    <linearGradient id="paperSide" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e6d8b8"/>
+      <stop offset="1" stop-color="#c9b48a"/>
+    </linearGradient>
+  </defs>
+  <rect width="400" height="400" rx="72" fill="url(#bg)"/>
+
+  <!-- the sound block -->
+  <g stroke="#0c1020" stroke-width="12" stroke-linejoin="round">
+    <path d="M78 286 V318 A122 34 0 0 0 322 318 V286 Z" fill="url(#paperSide)"/>
+    <ellipse cx="200" cy="286" rx="122" ry="34" fill="url(#paper)"/>
+  </g>
+
+  <!-- the strike -->
+  <g stroke="#ffd100" stroke-width="14" stroke-linecap="round">
+    <path d="M84 246 L56 232"/>
+    <path d="M100 216 L80 192"/>
+    <path d="M296 252 L326 240"/>
+  </g>
+
+  <!-- the gavel, head down on the block, handle up to the right -->
+  <g transform="translate(170 204) rotate(-38)" stroke="#0c1020" stroke-width="12" stroke-linejoin="round">
+    <rect x="34" y="-15" width="168" height="30" rx="15" fill="url(#gold)"/>
+    <circle cx="202" cy="0" r="22" fill="url(#gold)"/>
+    <rect x="-46" y="-82" width="92" height="164" rx="22" fill="url(#goldSide)"/>
+    <rect x="-56" y="-96" width="112" height="30" rx="12" fill="url(#gold)"/>
+    <rect x="-56" y="66" width="112" height="30" rx="12" fill="url(#gold)"/>
+  </g>
+</svg>
