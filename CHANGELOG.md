@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.1
+
+- Now also on [Wago Addons](https://addons.wago.io/addons/going-once). Nothing changes in game.
+
 ## v1.1.0
 
 - Shift-click a trade good's Buy button to choose how many to buy, as at a vendor; right-click still works. The
