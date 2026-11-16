@@ -30,6 +30,11 @@ alongside Auctionator.
 
 Auction & Economy.
 
+## Donation
+
+General tab, Donation Method: Ko-fi, username `ram01` (set 2026-11-16). CurseForge shows it as a Donate link on the
+project page, so the description has no Ko-fi line of its own.
+
 ## Avatar
 
 `media/icon-400.png`, rendered from `media/icon.svg` with `rsvg-convert -w 400 -h 400 media/icon.svg -o media/icon-400.png`.

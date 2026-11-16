@@ -50,6 +50,11 @@ Report them as an [issue](https://github.com/Rambomst/going-once/issues). For a 
 `/reload` after it and attach the `log` part of `WTF/Account/<account>/SavedVariables/GoingOnce.lua`: it lists the
 last 200 steps, from what was searched to every answer and error the auction house sent.
 
+## Support
+
+If Going Once saves you some clicks and you'd like to say thanks, you can
+[buy me a coffee on Ko-fi](https://ko-fi.com/ram01). It's free either way.
+
 ## Development
 
 Everything the addon runs is in `GoingOnce.lua`, plus the settings row template in `GoingOnce.xml`:
