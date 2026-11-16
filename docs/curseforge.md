@@ -26,14 +26,24 @@ which gear needs a second click (any amount in gold, silver and copper), and the
 Every purchase still takes a click, as Blizzard requires. Going Once works in Blizzard's own auction house window,
 alongside Auctionator.
 
+---
+
+### Buy me a coffee?
+
+<a href="https://ko-fi.com/ram01"><img src="https://storage.ko-fi.com/cdn/brandasset/v2/support_me_on_kofi_beige.png" alt="Support me on Ko-fi" width="254" height="51"></a>
+
 ## Categories
 
 Auction & Economy.
 
 ## Donation
 
-General tab, Donation Method: Ko-fi, username `ram01` (set 2026-11-16). CurseForge shows it as a Donate link on the
-project page, so the description has no Ko-fi line of its own.
+General tab, Donation Method: Ko-fi, username `ram01` (set 2026-11-16): a Donate link on the project page. The
+description also ends with the Ko-fi badge above, as the Nexus pages do (saved 2026-11-16).
+
+The badge is HTML because only HTML keeps its size: the image is 980 by 198. The editor shows a saved description
+back as Markdown and turns the badge into `[![Support me on Ko-fi](...)](https://ko-fi.com/ram01)` without the size,
+so before saving any later edit, put the HTML line back in its place, or the badge goes up at full width.
 
 ## Avatar
 
