@@ -2,6 +2,9 @@
 
 Paste these into the project settings. The repository is the source of truth; edit here first.
 
+The live page matches this text since 2026-11-16 (v1.1.0). CurseForge's editor keeps the description as Markdown with
+its lines unwrapped, so change the sentences there rather than pasting the whole section over it.
+
 ## Summary
 
 A Buyout button on every row of the auction house list: hover, click, bought.
