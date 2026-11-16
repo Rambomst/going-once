@@ -6,6 +6,8 @@ Buying from Blizzard's auction house means clicking an item, waiting for its auc
 and a confirmation. Going Once adds a **Buy** column at the right of the browse list: hover a row, click its Buy
 button, and the cheapest one is yours.
 
+![The auction house browse list with Going Once's Buy column](docs/screenshots/buy-column.png)
+
 - **Gear and other single items:** hovering a row reads its auctions, and one click buys the cheapest at its
   buyout price. It asks for a second click when the cheapest now costs more than the list shows, or costs at
   least an amount you choose (50 gold to start with).
