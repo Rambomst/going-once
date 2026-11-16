@@ -39,6 +39,7 @@ Auction & Economy.
 Upload them in the Media tab (drag the files in), with these titles and descriptions:
 
 - `docs/screenshots/buy-column.png`: **The Buy column.** A Buy button on every row of Blizzard's browse list.
+  On the page since 2026-11-16, featured.
 
 Still wanted, without other players' names in view: a trade good set to buy 25 with its tooltip, the chat line
 after a purchase, and the settings page.
