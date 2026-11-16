@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+
+permissions: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install LuaJIT
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends luajit
+      # forever_sim at the cjber/forever-core commit tests/forever_sim.txt pins, with the Blizzard UI source and client
+      # tables it runs against, which are fetched at test time and never committed.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/goingonce-sim/forever-core
+            ~/.cache/goingonce-sim/sim
+          key: forever-sim-${{ hashFiles('tests/forever_sim.txt') }}
+      - name: Fetch forever_sim
+        run: tests/sim.sh
+      - name: Run the tests
+        run: tests/run.sh

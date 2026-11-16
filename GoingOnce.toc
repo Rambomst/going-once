@@ -1,0 +1,10 @@
+## Interface: 16001
+## Title: Going Once
+## Notes: A Buyout button on every row of the auction house list: hover, click, bought.
+## Author: rambomst
+## Version: @project-version@
+## IconTexture: Interface\Icons\INV_Misc_Coin_01
+## SavedVariables: GoingOnceDB
+
+GoingOnce.lua
+GoingOnce.xml

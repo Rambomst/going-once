@@ -1,0 +1,9 @@
+<Ui xmlns="http://www.blizzard.com/wow/ui/">
+	<!-- A settings row for an amount of money; GoingOnceMoneyControlMixin in GoingOnce.lua fills it. -->
+	<Frame name="GoingOnceMoneyControlTemplate" inherits="SettingsListElementTemplate" mixin="GoingOnceMoneyControlMixin" virtual="true">
+		<Size x="280" y="26"/>
+		<Scripts>
+			<OnLoad method="OnLoad"/>
+		</Scripts>
+	</Frame>
+</Ui>
