@@ -18,10 +18,31 @@
 -- so making that box a column narrower frees the space without touching Blizzard's table; rows are followed with
 -- hooksecurefunc hooks, so Blizzard's auction house code keeps running untainted. The one exception is putting
 -- the scroll position back (KeepScroll).
+--
+-- Every item search makes the server refresh the browse results, and Blizzard answers a refresh by drawing the
+-- whole list again from the top: three times over when it was scrolled, with the scroll put back (57 rows for one
+-- read in the tests). A sweep down the list sent 40 searches in 23 seconds in game (2026-11-18), which stuttered.
+-- So a row is read only once the mouse rests on it (Rest), and Blizzard's list does not hear the refresh a hover
+-- read causes (Mute).
 
 local ADDON = ...
 
-local HOVER_DELAY = 0.12
+-- How long the mouse rests on a row, or on its Buy button, before the row is read. Moving on, or the list
+-- scrolling, starts the wait again.
+local REST_ROW = 0.15
+local REST_BUTTON = 0.04
+-- How far the mouse may drift and still be resting, in UI units.
+local REST_SLOP = 3
+local SCROLL_SETTLE = 0.25
+-- How long Blizzard's list stays deaf to refreshes after a hover read goes out, and after each answer to it. The
+-- server answered a search twice in game, the second time up to 0.58 s after the first (2026-11-18).
+local MUTE_SECONDS = 2
+local MUTE_TAIL = 1
+-- A refresh this soon after one of this addon's reads may be that read's.
+local REFRESH_WINDOW = 1.5
+-- A browse search counts as answered this long after it went out, when its answer could not be told from a read's
+-- refresh.
+local BROWSE_SETTLE = 3
 local OFFER_SECONDS = 30
 local ANSWER_TIMEOUT = 4
 -- The client may not fire the results event again for results it already holds (auxForever).
@@ -50,6 +71,8 @@ local DEFAULTS = {
 local db
 local sorts
 local setUp = false
+-- Blizzard's browse results frame and its list of rows.
+local browse
 local browseList
 -- The Buy column: a strip right of Blizzard's scroll box, which clips the buttons where the list scrolls.
 local column
@@ -58,11 +81,26 @@ local settingsCategory
 -- Offers are what a read found: the cheapest gear auction, or a trade good's price tiers.
 local offers = {}
 local commodityOffers = {}
+-- Whether an item key is a trade good, once the client has said: rows come and go as the list scrolls.
+local kinds = {}
 -- Key of the last item or trade good search anyone sent; purchases go through it.
 local lastSearch
 local queued
+-- The slot under the mouse, and the wait for the mouse to rest on it: since when, where, and for how long.
 local hovered
-local hoverTimer
+local restSince, restX, restY, restFor = 0, 0, 0, 0
+-- A frame whose OnUpdate watches the mouse; shown only while a hover waits.
+local pointer
+-- Whether Blizzard's browse frame is deaf to browse refreshes, and until when.
+local muted = false
+local muteUntil = 0
+local muteTimer = false
+-- Set while this addon sends its own read, so the search hook can tell it from anyone else's.
+local sending = false
+local ownSearchAt = -math.huge
+-- Until when Blizzard's list must hear the next refresh: a browse search's answer may still be on its way, or
+-- the refresh after a purchase. nil when nothing is awaited.
+local listenUntil
 -- The one purchase in flight: { kind = "item" | "commodity", state = "quoting" | "quoted" | "buying", ... }.
 local purchase
 -- The last purchase given up on while buying, until LATE_SECONDS: its answer may still come.
@@ -72,8 +110,9 @@ local confirming
 local bought = {}
 -- Set when a new browse search starts, so its results may scroll the list to the top.
 local freshBrowse = false
--- The list's scroll position as of the last frame, before any refresh in this one.
-local committedOffset = 0
+-- How far down the list is scrolled (0 to 1), what that was before the frame at scrollAt, and when it last moved.
+local scrollPercent, scrollBefore, scrollAt = 0, 0, -1
+local scrolledAt = -math.huge
 local amountBox
 
 -- One per row of Blizzard's browse list: its Buy button in the column, and the row's data.
@@ -81,10 +120,15 @@ local Slot = {}
 Slot.__index = Slot
 local slots = setmetatable({}, { __mode = "k" })
 
-local Read, Refresh, RefreshAll
+local Read, Refresh, RefreshKey, RefreshAll
 
 local function Now()
 	return GetTime()
+end
+
+-- Whether `seconds` have gone by since `since`. Frame times are sums of floats, so a hair short still counts.
+local function Passed(since, seconds)
+	return GetTime() - since >= seconds - 0.001
 end
 
 local function KeyOf(itemKey)
@@ -224,7 +268,60 @@ local function ListReady()
 	return not (dialog and dialog:IsShown())
 end
 
-local function Send(offer)
+---------------------------------------------------------------------------------------------------------------
+-- Mute: Blizzard's list does not hear the refresh a hover read causes
+---------------------------------------------------------------------------------------------------------------
+
+-- The refresh carries nothing a hover needs: the button and its tooltip show what the read found. Blizzard's frame
+-- registers for the event once, on load, so taking it off and putting it back is an engine call that leaves
+-- Blizzard's Lua alone. A refresh that is not heard is not made up for: the row keeps the price it had, as it does
+-- without this addon, until the next search or purchase.
+local REFRESH_EVENT = "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED"
+
+local function Unmute()
+	muteUntil = 0
+	if muted then
+		muted = false
+		browse:RegisterEvent(REFRESH_EVENT)
+	end
+end
+
+local function MuteRunsOut()
+	muteTimer = false
+	if not muted then
+		return
+	end
+	local left = muteUntil - Now()
+	if left > 0.001 then
+		muteTimer = true
+		C_Timer.After(left, MuteRunsOut)
+	else
+		Unmute()
+	end
+end
+
+local function Mute(seconds)
+	muteUntil = math.max(muteUntil, Now() + seconds)
+	if not muted then
+		muted = true
+		browse:UnregisterEvent(REFRESH_EVENT)
+	end
+	if not muteTimer then
+		muteTimer = true
+		C_Timer.After(seconds, MuteRunsOut)
+	end
+end
+
+-- Whether Blizzard's list is still owed a refresh (see listenUntil), so a hover read may not mute it.
+local function Listening()
+	if listenUntil and Now() >= listenUntil then
+		listenUntil = nil
+	end
+	return listenUntil ~= nil
+end
+
+-- refresh: lets Blizzard's list hear this read's refresh, so the row shows what is left after a purchase.
+local function Send(offer, refresh)
 	if queued and queued ~= offer and queued.state == "loading" then
 		Forget(queued)
 		Refresh(queued)
@@ -232,6 +329,7 @@ local function Send(offer)
 	offer.state = "loading"
 	offer.sentAt = Now()
 	offer.askedMore = nil
+	offer.refresh = refresh or nil
 	if purchase then
 		queued = offer
 		Log("hold", offer.key)
@@ -252,7 +350,18 @@ local function Send(offer)
 	end
 	queued = nil
 	local sentAt = offer.sentAt
+	if offer.refresh then
+		listenUntil = math.max(listenUntil or 0, sentAt + REFRESH_WINDOW)
+	end
+	if Listening() then
+		Unmute()
+	else
+		Mute(MUTE_SECONDS)
+	end
+	ownSearchAt = sentAt
+	sending = true
 	C_AuctionHouse.SendSearchQuery(offer.itemKey, sorts, true)
+	sending = false
 	C_Timer.After(CACHED_ANSWER_DELAY, function()
 		if offer.state == "loading" and offer.sentAt == sentAt and C_AuctionHouse.HasSearchResults(offer.itemKey) then
 			Read(offer)
@@ -335,6 +444,10 @@ local function ReadCommodity(offer)
 end
 
 function Read(offer)
+	-- The refresh may come with the answer or after it.
+	if muted then
+		Mute(MUTE_TAIL)
+	end
 	if offer.commodity then
 		ReadCommodity(offer)
 	else
@@ -360,50 +473,64 @@ end
 -- Hover
 ---------------------------------------------------------------------------------------------------------------
 
-local function Want(slot)
+-- refresh: see Send.
+local function Want(slot, refresh)
 	local row = slot.rowData
 	if not row or row.totalQuantity == 0 then
 		return
 	end
-	local info = C_AuctionHouse.GetItemKeyInfo(row.itemKey)
-	if not info then
+	local commodity = slot:Commodity()
+	if commodity == nil then
 		return
 	end
-	local offer = Offer(row.itemKey, info.isCommodity)
+	local offer = Offer(row.itemKey, commodity)
 	if Waiting(offer) or Known(offer) then
 		return
 	end
 	if purchase and purchase.key == offer.key then
 		return
 	end
-	Send(offer)
+	Send(offer, refresh)
 end
 
-local function Hover(slot, delay)
+-- The mouse came onto the slot: its row is read once the mouse has rested there for `seconds`.
+local function Rest(slot, seconds)
 	hovered = slot
-	if hoverTimer then
-		hoverTimer:Cancel()
-		hoverTimer = nil
-	end
-	if delay <= 0 then
-		Want(slot)
+	restFor = seconds
+	restSince = Now()
+	restX, restY = GetCursorPosition()
+	pointer:Show()
+end
+
+-- Runs every frame, but only while a hover waits for the mouse to rest.
+local function WatchPointer()
+	local slot = hovered
+	if not slot or not slot.rowData or not slot.button:IsVisible() then
+		pointer:Hide()
 		return
 	end
-	hoverTimer = C_Timer.NewTimer(delay, function()
-		hoverTimer = nil
-		if hovered == slot and slot.button:IsVisible() then
-			Want(slot)
-		end
-	end)
+	local x, y = GetCursorPosition()
+	local slop = REST_SLOP * pointer:GetEffectiveScale()
+	if math.abs(x - restX) > slop or math.abs(y - restY) > slop then
+		restX, restY, restSince = x, y, Now()
+	elseif Passed(restSince, restFor) and Passed(scrolledAt, SCROLL_SETTLE) then
+		pointer:Hide()
+		Want(slot)
+	end
 end
 
 local function Unhover(slot)
-	if hovered == slot then
-		hovered = nil
-		if hoverTimer then
-			hoverTimer:Cancel()
-			hoverTimer = nil
-		end
+	if hovered ~= slot then
+		return
+	end
+	hovered = nil
+	pointer:Hide()
+	-- A read that was held back and never sent is not worth sending for a row the mouse has left.
+	local offer = queued
+	if offer and offer.key == slot.key and offer.state == "loading" then
+		queued = nil
+		Forget(offer)
+		Refresh(offer)
 	end
 end
 
@@ -424,7 +551,7 @@ local function Finish(p)
 	local waiting = queued
 	if not purchase and waiting and waiting.state == "loading" then
 		queued = nil
-		Send(waiting)
+		Send(waiting, waiting.refresh)
 	end
 end
 
@@ -462,7 +589,7 @@ local function Succeed(p)
 	Refresh(p.offer)
 	-- The next cheapest is read during the flash, so a second buy is ready when it ends.
 	if hovered and hovered.key == p.key and hovered.button:IsVisible() then
-		Want(hovered)
+		Want(hovered, true)
 	end
 	C_Timer.After(BOUGHT_SECONDS, function()
 		if bought[p.key] == at then
@@ -480,7 +607,7 @@ local function Fail(p, message)
 	end
 	Refresh(p.offer)
 	if hovered and hovered.key == p.key and hovered.button:IsVisible() then
-		Want(hovered)
+		Want(hovered, true)
 	end
 end
 
@@ -781,12 +908,26 @@ function Slot:Clear()
 	self.button:Hide()
 end
 
+-- Whether the row is a trade good; nil until the client has the item's info.
+function Slot:Commodity()
+	local key = self.key
+	local commodity = kinds[key]
+	if commodity == nil and self.rowData then
+		local info = C_AuctionHouse.GetItemKeyInfo(self.rowData.itemKey)
+		if info then
+			commodity = info.isCommodity and true or false
+			kinds[key] = commodity
+		end
+	end
+	return commodity
+end
+
 function Slot:OnEnter()
 	local row = self.row
 	if row.HighlightTexture then
 		row.HighlightTexture:Show()
 	end
-	Hover(self, 0)
+	Rest(self, REST_BUTTON)
 	self:ShowTooltip()
 end
 
@@ -801,13 +942,13 @@ end
 
 function Slot:OnClick(mouseButton)
 	local row = self.rowData
-	local info = row and C_AuctionHouse.GetItemKeyInfo(row.itemKey)
-	if not info or row.totalQuantity == 0 then
+	local commodity = row and self:Commodity()
+	if commodity == nil or row.totalQuantity == 0 then
 		return
 	end
 	-- Shift-click picks an amount at a vendor too.
 	if mouseButton == "RightButton" or IsShiftKeyDown() then
-		if info.isCommodity then
+		if commodity then
 			AskAmount(self)
 		end
 		return
@@ -820,7 +961,7 @@ function Slot:OnClick(mouseButton)
 	elseif purchase and purchase.kind == "item" then
 		return
 	end
-	if info.isCommodity then
+	if commodity then
 		BuyCommodity(self)
 	else
 		BuyItem(self)
@@ -836,152 +977,222 @@ function Slot:SetLabel(text, fallback)
 	end
 end
 
--- The button's text, whether it can be clicked, the tooltip lines that explain it, and a shorter text for when
--- the first does not fit.
-function Slot:State()
+local BOUGHT = Green("Bought")
+local BUY_ANYWAY = Orange("Buy")
+
+-- The button's text, whether it can be clicked, and a shorter text for when the first does not fit. The lines
+-- that explain it go into `tip` when one is given: only the tooltip needs them, and most calls come from a redraw.
+function Slot:State(tip)
 	local row = self.rowData
 	if row.totalQuantity == 0 then
-		return "Buy", false, { "None for sale." }
+		if tip then
+			tip[1] = "None for sale."
+		end
+		return "Buy", false
 	end
-	local info = C_AuctionHouse.GetItemKeyInfo(row.itemKey)
-	if not info then
-		return "Buy", false, { "Loading the item..." }
+	local commodity = self:Commodity()
+	if commodity == nil then
+		if tip then
+			tip[1] = "Loading the item..."
+		end
+		return "Buy", false
 	end
-	local offer = offers[self.key]
-	local p = purchase and purchase.key == self.key and purchase or nil
+	local key = self.key
+	local offer = offers[key]
+	local p = purchase and purchase.key == key and purchase or nil
 	local money = GetMoney()
 
-	if bought[self.key] then
-		return Green("Bought"), false, { "Bought." }
+	if bought[key] then
+		if tip then
+			tip[1] = "Bought."
+		end
+		return BOUGHT, false
 	end
 
-	if info.isCommodity then
+	if commodity then
 		local amount = Amount(row.itemKey.itemID)
 		if p and p.state == "quoted" then
-			local each = Money(p.unitPrice) .. " each"
-			local lines = { string.format("%d for %s (%s).", p.quantity, Money(p.totalPrice), each) }
-			if p.unitPrice > p.expectUnit then
-				lines[#lines + 1] = Orange("More than the list shows (" .. Money(p.expectUnit) .. " each).")
+			local affordable = p.totalPrice <= money
+			if tip then
+				tip[1] = string.format("%d for %s (%s each).", p.quantity, Money(p.totalPrice), Money(p.unitPrice))
+				if p.unitPrice > p.expectUnit then
+					tip[#tip + 1] = Orange("More than the list shows (" .. Money(p.expectUnit) .. " each).")
+				end
+				tip[#tip + 1] = affordable and Green("Click to buy at this price.")
+					or Red("You don't have enough gold.")
 			end
-			if p.totalPrice > money then
-				lines[#lines + 1] = Red("You don't have enough gold.")
-				return Green(Money(p.totalPrice)), false, lines, "Confirm"
-			end
-			lines[#lines + 1] = Green("Click to buy at this price.")
-			return Green(Money(p.totalPrice)), true, lines, Green("Confirm")
+			return Green(Money(p.totalPrice)), affordable, affordable and Green("Confirm") or "Confirm"
 		elseif p then
-			return "...", false, { "Asking the auction house for the price..." }
+			if tip then
+				tip[1] = "Asking the auction house for the price..."
+			end
+			return "...", false
 		end
 		if offer and Waiting(offer) then
-			return "...", false, { "Reading the auctions..." }
+			if tip then
+				tip[1] = "Reading the auctions..."
+			end
+			return "...", false
 		end
 		local label = amount > 1 and ("Buy " .. amount) or "Buy"
-		local lines = {
-			amount > 1 and string.format("Buys %d, cheapest first.", amount) or "Buys one.",
-			HIGHLIGHT_FONT_COLOR:WrapTextInColorCode("Right-click or Shift-click to choose how many."),
-		}
 		local cost = row.minPrice * amount
-		if offer and Usable(offer) then
-			local total, enough = Estimate(offer, amount)
+		local read = offer and Usable(offer)
+		if not read and offer and Known(offer) and offer.state == "none" then
+			if tip then
+				tip[1] = offer.reason == "own" and "Only your own are for sale." or "None for sale."
+			end
+			return label, false
+		end
+		local total, enough
+		if read then
+			total, enough = Estimate(offer, amount)
 			if enough then
 				cost = total
-				lines[#lines + 1] = "About " .. Money(total) .. "."
-			elseif offer.full then
-				lines[#lines + 1] = Orange(string.format("Only %d for sale.", offer.available))
 			end
-		elseif offer and Known(offer) and offer.state == "none" then
-			return label, false, { offer.reason == "own" and "Only your own are for sale." or "None for sale." }
-		else
-			lines[#lines + 1] = "Click to check the price first."
 		end
-		if cost > money then
-			lines[#lines + 1] = Red("You don't have enough gold.")
-			return label, false, lines
+		local affordable = cost <= money
+		if tip then
+			tip[1] = amount > 1 and string.format("Buys %d, cheapest first.", amount) or "Buys one."
+			tip[2] = HIGHLIGHT_FONT_COLOR:WrapTextInColorCode("Right-click or Shift-click to choose how many.")
+			if not read then
+				tip[3] = "Click to check the price first."
+			elseif enough then
+				tip[3] = "About " .. Money(total) .. "."
+			elseif offer.full then
+				tip[3] = Orange(string.format("Only %d for sale.", offer.available))
+			end
+			if not affordable then
+				tip[#tip + 1] = Red("You don't have enough gold.")
+			elseif db.autoConfirm then
+				tip[#tip + 1] = "One click buys when the price matches the list. If it costs more, you confirm."
+			else
+				tip[#tip + 1] = "The next click confirms the price."
+			end
 		end
-		if db.autoConfirm then
-			lines[#lines + 1] = "One click buys when the price matches the list. If it costs more, you confirm."
-		else
-			lines[#lines + 1] = "The next click confirms the price."
-		end
-		return label, true, lines
+		return label, affordable
 	end
 
 	if p then
-		return "...", false, { "Buying..." }
+		if tip then
+			tip[1] = "Buying..."
+		end
+		return "...", false
 	end
 	if offer and Waiting(offer) then
-		return "...", false, { "Reading the auctions..." }
+		if tip then
+			tip[1] = "Reading the auctions..."
+		end
+		return "...", false
 	end
 	if offer and Usable(offer) then
 		local price = offer.price
-		local lines = { "Cheapest: " .. Money(price) .. "." }
-		if price > money then
-			lines[#lines + 1] = Red("You don't have enough gold.")
-			return "Buy", false, lines
+		if tip then
+			tip[1] = "Cheapest: " .. Money(price) .. "."
 		end
-		if confirming and confirming.key == self.key and confirming.auctionID == offer.auctionID then
-			lines[#lines + 1] = Orange("Click again to buy for " .. Money(price) .. ".")
-			return Orange(Money(price)), true, lines, Orange("Confirm")
+		if price > money then
+			if tip then
+				tip[2] = Red("You don't have enough gold.")
+			end
+			return "Buy", false
+		end
+		if confirming and confirming.key == key and confirming.auctionID == offer.auctionID then
+			if tip then
+				tip[2] = Orange("Click again to buy for " .. Money(price) .. ".")
+			end
+			return Orange(Money(price)), true, Orange("Confirm")
 		end
 		if price > row.minPrice then
-			lines[#lines + 1] = Orange("More than the list shows: the cheaper ones are gone.")
-			lines[#lines + 1] = "Click twice to buy."
-			return Orange("Buy"), true, lines
+			if tip then
+				tip[2] = Orange("More than the list shows: the cheaper ones are gone.")
+				tip[3] = "Click twice to buy."
+			end
+			return BUY_ANYWAY, true
 		end
-		if Expensive(price) then
-			lines[#lines + 1] = "Click twice to buy (" .. Money(db.confirmAbove) .. " or more)."
-			return "Buy", true, lines
+		if tip then
+			if Expensive(price) then
+				tip[2] = "Click twice to buy (" .. Money(db.confirmAbove) .. " or more)."
+			else
+				tip[2] = Green("Click to buy.")
+			end
 		end
-		lines[#lines + 1] = Green("Click to buy.")
-		return "Buy", true, lines
+		return "Buy", true
 	end
 	if offer and Known(offer) and offer.state == "none" then
-		local reason = offer.reason == "own" and "Only your own auctions are left."
-			or offer.reason == "bids" and "These auctions only take bids."
-			or "Nothing left to buy."
-		return "Buy", false, { reason }
+		if tip then
+			tip[1] = offer.reason == "own" and "Only your own auctions are left."
+				or offer.reason == "bids" and "These auctions only take bids."
+				or "Nothing left to buy."
+		end
+		return "Buy", false
 	end
 	if row.minPrice > money then
-		return "Buy", false, { Red("You don't have enough gold.") }
+		if tip then
+			tip[1] = Red("You don't have enough gold.")
+		end
+		return "Buy", false
 	end
-	return "Buy", true, { "Click to find the cheapest." }
+	if tip then
+		tip[1] = "Click to find the cheapest."
+	end
+	return "Buy", true
 end
 
+-- A hidden button keeps its text and state, so only a change is written to it.
 function Slot:Update()
 	if not self.rowData or not db then
 		return
 	end
-	local text, enabled, _, fallback = self:State()
-	self:SetLabel(text, fallback)
-	self.button:SetEnabled(enabled)
-	if GameTooltip:IsOwned(self.button) then
+	local text, enabled, fallback = self:State()
+	local button = self.button
+	if text ~= self.text or fallback ~= self.fallback then
+		self.text, self.fallback = text, fallback
+		self:SetLabel(text, fallback)
+	end
+	if enabled ~= self.enabled then
+		self.enabled = enabled
+		button:SetEnabled(enabled)
+	end
+	if GameTooltip:IsOwned(button) then
 		self:ShowTooltip()
 	end
 end
+
+local tipLines = {}
 
 function Slot:ShowTooltip()
 	if not self.rowData then
 		return
 	end
-	local _, _, lines = self:State()
+	wipe(tipLines)
+	self:State(tipLines)
 	GameTooltip:SetOwner(self.button, "ANCHOR_RIGHT")
 	GameTooltip_SetTitle(GameTooltip, "Buy now")
-	for _, line in ipairs(lines) do
+	for _, line in ipairs(tipLines) do
 		GameTooltip_AddNormalLine(GameTooltip, line, true)
 	end
 	GameTooltip:AddLine("Settings: /goingonce", 0.5, 0.5, 0.5)
 	GameTooltip:Show()
 end
 
-function Refresh(offer)
+function RefreshKey(key)
+	if not key then
+		return
+	end
 	for _, slot in pairs(slots) do
-		if slot.key == offer.key and slot.button:IsVisible() then
+		if slot.key == key and slot.button:IsVisible() then
 			slot:Update()
 		end
 	end
 end
 
+function Refresh(offer)
+	RefreshKey(offer.key)
+end
+
 function RefreshAll()
+	if not column or not column:IsVisible() then
+		return
+	end
 	for _, slot in pairs(slots) do
 		if slot.rowData and slot.button:IsVisible() then
 			slot:Update()
@@ -993,15 +1204,26 @@ end
 -- Set-up on Blizzard's auction house
 ---------------------------------------------------------------------------------------------------------------
 
+-- Any item search but this addon's own read: Blizzard's list hears its refresh, as it does without this addon.
 local function OnItemSearch(itemKey)
+	local previous = lastSearch
 	lastSearch = itemKey and KeyOf(itemKey) or nil
 	Log("search", lastSearch)
-	RefreshAll()
+	if not sending then
+		Unmute()
+	end
+	-- Only the two rows whose search this was, or is now, show a different button.
+	if previous ~= lastSearch then
+		RefreshKey(previous)
+		RefreshKey(lastSearch)
+	end
 end
 
 local function OnBrowseSearch()
 	lastSearch = nil
 	freshBrowse = true
+	listenUntil = Now() + BROWSE_SETTLE
+	Unmute()
 	Log("browse search")
 end
 
@@ -1011,7 +1233,9 @@ local function Hook(name, f)
 	end
 end
 
--- Requests to the server besides the searches hooked above.
+-- Requests to the server besides the searches hooked above. These go out during a sweep without the player
+-- asking (more rows as the list scrolls, Blizzard's look at your own auctions) or are part of a purchase, so the
+-- list's mute outlasts them.
 local REQUESTS = {
 	"PlaceBid",
 	"StartCommoditiesPurchase",
@@ -1020,11 +1244,13 @@ local REQUESTS = {
 	"RequestMoreBrowseResults",
 	"RequestMoreItemSearchResults",
 	"RequestMoreCommoditySearchResults",
-	"SearchForItemKeys",
-	"ReplicateItems",
 	"QueryOwnedAuctions",
 	"QueryBids",
 	"RequestOwnedAuctionBidderInfo",
+}
+
+-- The player's other requests: whatever the server answers them with, Blizzard's list hears it.
+local PLAYER_REQUESTS = {
 	"PostItem",
 	"PostCommodity",
 	"ConfirmPostItem",
@@ -1047,17 +1273,32 @@ local function Brief(...)
 	return table.concat(parts, " ")
 end
 
+-- Blizzard's scroll box says so on every layout, and when the list moves. A refresh scrolls to the top within one
+-- frame, so what the position was before that frame is kept apart.
+local function OnScroll(_, percent)
+	local now = Now()
+	if now ~= scrollAt then
+		scrollBefore = scrollPercent
+		scrollAt = now
+	end
+	if percent ~= scrollPercent then
+		scrollPercent = percent
+		scrolledAt = now
+	end
+end
+
 -- An item search makes the server refresh the browse results (to update that item's price; Auctionator notes
 -- this too), and Blizzard answers any refresh by scrolling the list to the top. Only a new browse search should.
 -- Scrolling back re-lays the visible rows from this addon's code: the one place Blizzard's list runs tainted.
 local function KeepScroll(list)
 	if freshBrowse then
 		freshBrowse = false
-		committedOffset = 0
+		scrollPercent, scrollBefore = 0, 0
 		return
 	end
-	if committedOffset > 0 and list.isInitialized then
-		list.ScrollBox:ScrollToOffset(committedOffset, true)
+	local percent = Now() == scrollAt and scrollBefore or scrollPercent
+	if percent > 0 and list.isInitialized then
+		list.ScrollBox:SetScrollPercentage(percent, true)
 	end
 end
 
@@ -1125,10 +1366,13 @@ local function SetUp()
 	end
 	setUp = true
 	sorts = { { sortOrder = Enum.AuctionHouseSortOrder.Price, reverseSort = false } }
-	local browse = AuctionHouseFrame.BrowseResultsFrame
+	browse = AuctionHouseFrame.BrowseResultsFrame
 	browseList = browse.ItemList
 
 	MakeColumn(browseList)
+	pointer = CreateFrame("Frame", nil, column)
+	pointer:Hide()
+	pointer:SetScript("OnUpdate", WatchPointer)
 	if browseList.tableBuilder then
 		FollowRows(browseList.tableBuilder)
 	else
@@ -1144,20 +1388,21 @@ local function SetUp()
 	-- Only the browse list uses this cell (AuctionHouseTableBuilder.GetBrowseListLayout); its cells are made when
 	-- rows first show, after this, so each one copies the hooked methods. The cell's row is its parent.
 	local cellMixin = AuctionHouseTableCellItemDisplayMixin
-	-- Runs when the item's info arrives after the row was drawn.
+	-- For the item's info arriving after the row was drawn. Blizzard also calls this while it fills a cell, before
+	-- the cell moves to its row: its parent is then the row it came from, which shows other data.
 	hooksecurefunc(cellMixin, "UpdateDisplay", function(cell)
 		local slot = slots[cell:GetParent()]
-		if slot and slot.rowData then
+		if slot and slot.rowData and slot.rowData == cell.rowData then
 			slot:Update()
 			if hovered == slot then
-				Want(slot)
+				Rest(slot, restFor)
 			end
 		end
 	end)
 	hooksecurefunc(cellMixin, "OnLineEnter", function(cell)
 		local slot = slots[cell:GetParent()]
 		if slot and slot.rowData then
-			Hover(slot, HOVER_DELAY)
+			Rest(slot, REST_ROW)
 		end
 	end)
 	hooksecurefunc(cellMixin, "OnLineLeave", function(cell)
@@ -1168,12 +1413,7 @@ local function SetUp()
 	end)
 
 	hooksecurefunc(browseList, "Reset", KeepScroll)
-	local watch = CreateFrame("Frame", nil, browse)
-	watch:SetScript("OnUpdate", function()
-		if browseList.isInitialized then
-			committedOffset = browseList.ScrollBox:GetDerivedScrollOffset()
-		end
-	end)
+	browseList.ScrollBox:RegisterCallback(ScrollBoxListMixin.Event.OnScroll, OnScroll, column)
 
 	Hook("SendSearchQuery", OnItemSearch)
 	Hook("SendSellSearchQuery", OnItemSearch)
@@ -1183,12 +1423,21 @@ local function SetUp()
 	end)
 	Hook("SendBrowseQuery", OnBrowseSearch)
 	Hook("SearchForFavorites", OnBrowseSearch)
+	Hook("SearchForItemKeys", OnBrowseSearch)
 	Hook("ReplicateItems", function()
 		lastSearch = nil
+		Unmute()
+		Log("sent", "ReplicateItems")
 	end)
 	-- The other requests, from any addon or Blizzard, so the log shows what an error may have answered.
 	for _, name in ipairs(REQUESTS) do
 		Hook(name, function(...)
+			Log("sent", name, Brief(...))
+		end)
+	end
+	for _, name in ipairs(PLAYER_REQUESTS) do
+		Hook(name, function(...)
+			Unmute()
 			Log("sent", name, Brief(...))
 		end)
 	end
@@ -1206,9 +1455,14 @@ local function Reset()
 	queued = nil
 	hovered = nil
 	lastSearch = nil
-	committedOffset = 0
+	listenUntil = nil
+	Unmute()
+	if pointer then
+		pointer:Hide()
+	end
 	wipe(offers)
 	wipe(commodityOffers)
+	wipe(kinds)
 	wipe(bought)
 	if amountBox then
 		amountBox:Hide()
@@ -1420,7 +1674,7 @@ end
 function handlers.ITEM_SEARCH_RESULTS_UPDATED(itemKey)
 	local offer = itemKey and offers[KeyOf(itemKey)]
 	if offer and not offer.commodity and not (purchase and purchase.key == offer.key) then
-		ReadItem(offer)
+		Read(offer)
 	end
 end
 handlers.ITEM_SEARCH_RESULTS_ADDED = handlers.ITEM_SEARCH_RESULTS_UPDATED
@@ -1428,10 +1682,24 @@ handlers.ITEM_SEARCH_RESULTS_ADDED = handlers.ITEM_SEARCH_RESULTS_UPDATED
 function handlers.COMMODITY_SEARCH_RESULTS_UPDATED(itemID)
 	local offer = commodityOffers[itemID]
 	if offer then
-		ReadCommodity(offer)
+		Read(offer)
 	end
 end
 handlers.COMMODITY_SEARCH_RESULTS_ADDED = handlers.COMMODITY_SEARCH_RESULTS_UPDATED
+
+-- The answer to a browse search, or the refresh an item search causes: the same event. With none of this addon's
+-- reads sent lately it can only be the answer, and nothing more is awaited.
+function handlers.AUCTION_HOUSE_BROWSE_RESULTS_UPDATED()
+	if muted then
+		Log("refresh not shown")
+	elseif Passed(ownSearchAt, REFRESH_WINDOW) then
+		listenUntil = nil
+	end
+end
+
+function handlers.AUCTION_HOUSE_BROWSE_FAILURE()
+	listenUntil = nil
+end
 
 local function ItemBought(auctionID)
 	local p = purchase
@@ -1545,7 +1813,7 @@ function handlers.AUCTION_HOUSE_THROTTLED_SYSTEM_READY()
 	if p and p.confirmWhenReady then
 		Confirm(p)
 	elseif queued then
-		Send(queued)
+		Send(queued, queued.refresh)
 	end
 end
 

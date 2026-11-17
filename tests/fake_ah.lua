@@ -17,6 +17,10 @@ Fake.keyOf = keyOf
 
 -- spec.items: { { itemID, name, itemLevel?, auctions = { { id, buyout?, own?, account? } } } }
 -- spec.commodities: { { itemID, name, tiers = { { unitPrice, quantity, own? } } } }
+-- spec.browseRefreshOnSearch: every item search also refreshes the browse results, as Forever's server does;
+-- spec.browseRefreshDelay: seconds after the search's answer that the refresh comes (default: with the answer).
+-- spec.secondAnswer: seconds after its first answer that an item search is answered again (0.13 to 0.58 s in game,
+-- 2026-11-18). spec.browseAnswer: seconds until a browse search is answered (default: latency).
 -- spec.buyAnswer: seconds until a bid or confirm is answered (default: latency); spec.buySilent: never answered.
 -- spec.strayError: an error code sent right after each bid or confirm that still goes through, as Forever's server
 -- did on 2026-11-16.
@@ -33,6 +37,9 @@ function Fake.install(sim, spec)
 	self.searched = {}
 	self.lastSearch = nil
 	self.browseRefreshOnSearch = spec.browseRefreshOnSearch
+	self.browseRefreshDelay = spec.browseRefreshDelay
+	self.secondAnswer = spec.secondAnswer
+	self.browseAnswer = spec.browseAnswer
 	self.silentRepeatSearch = spec.silentRepeatSearch
 	self.buyAnswer = spec.buyAnswer
 	self.buySilent = spec.buySilent
@@ -142,11 +149,22 @@ function Fake.install(sim, spec)
 	end)
 	api("SendBrowseQuery", function()
 		self:after(function()
+			self.browse = self:browseResults()
 			self:fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
-		end)
+		end, self.browseAnswer)
 	end)
+	-- The client holds the results of the last browse search answered; an item search only refreshes its own row.
 	api("GetBrowseResults", function()
-		return self:browseResults()
+		local out = {}
+		for i, result in ipairs(self.browse or {}) do
+			out[i] = {
+				itemKey = result.itemKey,
+				totalQuantity = result.totalQuantity,
+				minPrice = result.minPrice,
+				containsOwnerItem = result.containsOwnerItem,
+			}
+		end
+		return out
 	end)
 	api("SendSearchQuery", function(itemKey)
 		local key = keyOf(itemKey)
@@ -160,16 +178,35 @@ function Fake.install(sim, spec)
 		if repeated and self.silentRepeatSearch then
 			return
 		end
-		self:after(function()
+		local function answer()
 			if self.commodities[itemKey.itemID] then
 				self:fire("COMMODITY_SEARCH_RESULTS_UPDATED", itemKey.itemID)
 			else
 				self:fire("ITEM_SEARCH_RESULTS_UPDATED", itemKey, nil)
 			end
-			if self.browseRefreshOnSearch then
-				self:fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+		end
+		local function refresh()
+			for _, fresh in ipairs(self:browseResults()) do
+				for i, held in ipairs(self.browse or {}) do
+					if keyOf(held.itemKey) == key and keyOf(fresh.itemKey) == key then
+						self.browse[i] = fresh
+					end
+				end
+			end
+			self:fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+		end
+		self:after(function()
+			answer()
+			if self.browseRefreshOnSearch and not self.browseRefreshDelay then
+				refresh()
 			end
 		end)
+		if self.browseRefreshOnSearch and self.browseRefreshDelay then
+			self:after(refresh, self.latency + self.browseRefreshDelay)
+		end
+		if self.secondAnswer then
+			self:after(answer, self.latency + self.secondAnswer)
+		end
 	end)
 	api("HasSearchResults", function(itemKey)
 		return self.searched[keyOf(itemKey)] == true

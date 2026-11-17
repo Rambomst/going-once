@@ -110,7 +110,8 @@ end
 local Session = {}
 Session.__index = Session
 
--- A logged-in client at an open auction house that has searched once. opts.addon = false runs Blizzard alone.
+-- A logged-in client at an open auction house that has searched once. opts.addon = false runs Blizzard alone;
+-- opts.prepare(server) changes what the server holds before the client first asks.
 local function open(opts)
 	opts = opts or {}
 	-- GOINGONCE_BASELINE=1 runs a scenario on Blizzard's UI alone, to tell a sim gap from an addon fault.
@@ -127,6 +128,9 @@ local function open(opts)
 		spec[k] = v
 	end
 	local server = Fake.install(sim, spec)
+	if opts.prepare then
+		opts.prepare(server)
+	end
 	sim:login({ savedVariables = opts.saved })
 	sim:takeErrors()
 	sim:loadBlizzard("Blizzard_AuctionHouseUI")
@@ -207,6 +211,27 @@ end
 function Session:click(itemID, mouseButton, wait)
 	self.sim:click(self:button(itemID), mouseButton)
 	self.server:tick(wait or 0.4)
+end
+
+-- Moves the mouse onto the frame and keeps it moving across it for `seconds`, as a sweep down the list does.
+function Session:glide(frame, seconds)
+	self.sim:hover(frame)
+	for _ = 1, math.floor(seconds / 0.05 + 0.5) do
+		self.sim.mouseX = (self.sim.mouseX or 0) + 8
+		self.server:tick(0.05)
+	end
+end
+
+-- Counts the rows Blizzard draws from here on: its table builder fills one for every row it lays out.
+function Session:countRows()
+	local count = { rows = 0 }
+	local builder = self:list().tableBuilder
+	self.sim.run(function()
+		self.G.hooksecurefunc(builder, "AddRow", function()
+			count.rows = count.rows + 1
+		end)
+	end)
+	return count
 end
 
 -- Color codes, links and money textures turned into plain text, e.g. "1g 50s 20c".
@@ -590,10 +615,13 @@ test("an automatic confirm with no answer is not sent twice", function()
 end)
 
 test("a row whose item info loads late is read once it arrives", function()
-	local s = open()
-	local info = s.server.info[2001]
-	s.server.info[2001] = nil
-	s:search()
+	local info
+	local s = open({
+		prepare = function(server)
+			info = server.info[2001]
+			server.info[2001] = nil
+		end,
+	})
 	s:hoverButton(2001)
 	eq(s.server:count("SendSearchQuery"), 0, "nothing to read yet")
 	ok(not s:enabled(2001), "disabled while loading")
@@ -631,26 +659,185 @@ test("results the client already holds are read without an event", function()
 	noAddonErrors(s)
 end)
 
-test("an item search that refreshes the browse list keeps its scroll position", function()
+-- Forty single items, enough to scroll.
+local function fillers()
 	local items = {}
 	for i = 1, 40 do
 		items[i] = { itemID = 3000 + i, name = "Filler " .. i, auctions = { { id = 9000 + i, buyout = 1 * GOLD + i } } }
 	end
-	local s = open({ spec = { items = items, commodities = {}, browseRefreshOnSearch = true } })
+	return items
+end
+
+-- The list scrolled down a few rows; returns its scroll box and the offset.
+local function scrolled(s)
 	local box = s:list().ScrollBox
 	s.sim.run(function()
 		box:ScrollToOffset(200, true)
 	end)
 	s.server:tick(0.1)
-	local before = box:GetDerivedScrollOffset()
-	ok(before > 0, "scrolled down")
-	local row = s:rows()[3]
-	s.sim:hover(row)
+	local offset = box:GetDerivedScrollOffset()
+	ok(offset > 0, "scrolled down")
+	return box, math.floor(offset + 0.5)
+end
+
+test("a refresh of the browse list keeps its scroll position", function()
+	local s = open({ spec = { items = fillers(), commodities = {}, browseRefreshOnSearch = true } })
+	local box, before = scrolled(s)
+	-- An item search from Blizzard's own code or another addon: Blizzard redraws the list from the top.
+	local key = s:rows()[3].rowData.itemKey
+	s.sim.run(function()
+		s.G.C_AuctionHouse.SendSearchQuery(key, {}, true)
+	end)
 	s.server:tick(0.5)
-	eq(s.server:count("SendSearchQuery"), 1, "the hover searched")
-	eq(math.floor(box:GetDerivedScrollOffset() + 0.5), math.floor(before + 0.5), "scroll offset kept")
+	eq(math.floor(box:GetDerivedScrollOffset() + 0.5), before, "scroll offset kept")
 	s:search()
 	eq(box:GetDerivedScrollOffset(), 0, "a new search starts at the top")
+	noAddonErrors(s)
+end)
+
+-- In game (2026-11-18) a sweep down the list sent 40 searches in 23 seconds, and the server answers each with a
+-- refresh of the browse results that makes Blizzard redraw every row.
+test("sweeping the mouse down the list reads nothing until it rests", function()
+	local s =
+		open({ spec = { items = fillers(), commodities = {}, browseRefreshOnSearch = true, secondAnswer = 0.25 } })
+	scrolled(s)
+	local rows = s:rows()
+	local drawn = s:countRows()
+	for i = 1, 8 do
+		s:glide(rows[i], 0.3)
+	end
+	eq(
+		string.format("%d searches, %d rows redrawn", s.server:count("SendSearchQuery"), drawn.rows),
+		"0 searches, 0 rows redrawn",
+		"while the mouse moves"
+	)
+	s.server:tick(0.6)
+	eq(s.server:count("SendSearchQuery"), 1, "one read where it stopped")
+	noAddonErrors(s)
+end)
+
+test("sweeping down the Buy buttons reads nothing until the mouse rests", function()
+	local s = open({ spec = { items = fillers(), commodities = {}, browseRefreshOnSearch = true } })
+	local rows = s:rows()
+	for i = 1, 8 do
+		s:glide(s:button(rows[i].rowData.itemKey.itemID), 0.1)
+	end
+	eq(s.server:count("SendSearchQuery"), 0, "searches while the mouse moves")
+	s.server:tick(0.3)
+	eq(s.server:count("SendSearchQuery"), 1, "one read where it stopped")
+	noAddonErrors(s)
+end)
+
+test("a hover read does not make Blizzard redraw the list", function()
+	local s = open({
+		spec = { items = fillers(), commodities = {}, browseRefreshOnSearch = true, browseRefreshDelay = 0.3 },
+	})
+	local box, before = scrolled(s)
+	local drawn = s:countRows()
+	local itemID = s:rows()[3].rowData.itemKey.itemID
+	s:hoverButton(itemID, 1)
+	eq(s.server:count("SendSearchQuery"), 1, "the hover searched")
+	eq(s:label(itemID), "Buy", "and the read is ready")
+	eq(drawn.rows, 0, "rows redrawn")
+	eq(math.floor(box:GetDerivedScrollOffset() + 0.5), before, "scroll offset kept")
+	noAddonErrors(s)
+end)
+
+test("the list scrolling under the mouse reads nothing until it stops", function()
+	local s = open({ spec = { items = fillers(), commodities = {}, browseRefreshOnSearch = true } })
+	local box = s:list().ScrollBox
+	for step = 1, 6 do
+		s.sim.run(function()
+			box:ScrollToOffset(step * 20, true)
+		end)
+		-- the next row's button slides under the resting mouse (the sim only enters a frame the mouse was not on)
+		s.sim:leave()
+		s:hoverButton(s:rows()[2].rowData.itemKey.itemID, 0.1)
+	end
+	eq(s.server:count("SendSearchQuery"), 0, "searches while it scrolls")
+	s.server:tick(0.5)
+	eq(s.server:count("SendSearchQuery"), 1, "one read once it stopped")
+	noAddonErrors(s)
+end)
+
+test("a new search shows its results right after a hover read", function()
+	local s = open({ spec = { browseRefreshOnSearch = true, browseRefreshDelay = 0.3 } })
+	s:hoverButton(2001, 0.2)
+	eq(s.server:count("SendSearchQuery"), 1, "the hover searched")
+	-- the sword sells out and the player searches again, before the read's refresh came
+	s.server.items["2001:0:0:0"] = nil
+	s:search()
+	for _, row in ipairs(s:rows()) do
+		ok(row.rowData.itemKey.itemID ~= 2001, "the sold-out sword is off the list")
+	end
+	ok(#s:rows() > 0, "the new results are shown")
+	noAddonErrors(s)
+end)
+
+-- The read's refresh comes after the new search went out, and that search is answered late: the hover on the old
+-- rows must not make the list deaf to the answer.
+test("a slow search still shows its results when the mouse rests on an old row meanwhile", function()
+	local s = open({ spec = { browseRefreshOnSearch = true, browseRefreshDelay = 0.5 } })
+	s.server.browseAnswer = 1.5
+	s:hoverButton(2001, 0.2)
+	s.server.items["2001:0:0:0"] = nil
+	s.sim:click(s.G.AuctionHouseFrame.SearchBar.SearchButton)
+	s.server:tick(0.6)
+	-- the old rows are back with the read's late refresh; the mouse rests on one
+	local rows = s:rows()
+	if #rows > 0 then
+		s.sim:hover(rows[#rows])
+	end
+	s.server:tick(2)
+	ok(#s:rows() > 0, "the new results are shown")
+	for _, row in ipairs(s:rows()) do
+		ok(row.rowData.itemKey.itemID ~= 2001, "the sold-out sword is off the list")
+	end
+	noAddonErrors(s)
+end)
+
+test("the list shows the next cheapest after a purchase", function()
+	local s = open({ spec = { browseRefreshOnSearch = true } })
+	s:hoverButton(2001)
+	eq(s:row(2001).rowData.minPrice, 2 * GOLD, "the list's price before")
+	s:click(2001)
+	s.server:tick(2)
+	eq(s.server:count("PlaceBid"), 1, "bought")
+	eq(s:row(2001).rowData.minPrice, 3 * GOLD, "the list's price after")
+	eq(s:label(2001), "Buy", "and the next one is ready")
+	noAddonErrors(s)
+end)
+
+test("moving on right after a purchase still shows what is left", function()
+	local s = open({ spec = { browseRefreshOnSearch = true, browseRefreshDelay = 0.5 } })
+	s:hoverButton(2001, 3)
+	s:click(2001, nil, 0.2)
+	eq(s.server:count("PlaceBid"), 1, "bought")
+	eq(s.server:count("SendSearchQuery"), 2, "and read again")
+	-- the mouse rests on another row while that read's refresh is still on its way
+	s:hoverButton(2003, 1.5)
+	eq(s.server:count("SendSearchQuery"), 3, "the next row is read")
+	eq(s:row(2001).rowData.minPrice, 3 * GOLD, "the list's price for what was bought")
+	noAddonErrors(s)
+end)
+
+test("the list listens for refreshes again once a hover read has settled", function()
+	local s = open({ spec = { browseRefreshOnSearch = true } })
+	s:hoverButton(2001, 4)
+	local drawn = s:countRows()
+	s.server.items["2001:0:0:0"].auctions[1].buyout = 1 * GOLD
+	s.server.browse = s.server:browseResults()
+	s.server:fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+	s.server:tick(0.2)
+	ok(drawn.rows > 0, "Blizzard redrew the list")
+	eq(s:row(2001).rowData.minPrice, 1 * GOLD, "with the new price")
+	-- Blizzard's frame was taken off the event and put back by Going Once; what it draws must still be its own.
+	s.sim:click(s:row(2003))
+	s.server:tick(0.3)
+	local query = s.server:last("SendSearchQuery")
+	eq(query.args[1].itemID, 2003, "Blizzard searched the row clicked")
+	eq(query.taint, nil, "and its row click still runs untainted")
+	eq(s.G.AuctionHouseFrame.ItemBuyFrame:IsShown(), true, "item view open")
 	noAddonErrors(s)
 end)
 
@@ -1021,11 +1208,26 @@ test("no read goes out while a trade good's quote is open", function()
 	local searches = s.server:count("SendSearchQuery")
 	s:hoverRow(2001, 0.6)
 	eq(s.server:count("SendSearchQuery"), searches, "the read waits")
+	eq(s:label(2001), "...", "and the row shows it")
 	s:hoverButton(2589)
+	eq(s:label(2001), "Buy", "a read still held back is dropped when the mouse leaves its row")
 	s:click(2589)
 	eq(s.server:count("ConfirmCommoditiesPurchase"), 1, "confirmed")
 	eq(s.server.money, 100 * GOLD - 1100, "the quote was still good")
-	eq(s.server:count("SendSearchQuery"), searches + 2, "the held read and the re-read went out after")
+	eq(s.server:count("SendSearchQuery"), searches + 1, "only the trade good is read again after")
+	noAddonErrors(s)
+end)
+
+test("a read held back by a quote goes out when the quote is gone", function()
+	local s = open({ saved = { GoingOnceDB = { amounts = { [2589] = 20 } } } })
+	s:hoverButton(2589)
+	s:click(2589)
+	eq(s:label(2589), "11s", "quote open, waiting for the click")
+	local searches = s.server:count("SendSearchQuery")
+	s:hoverRow(2001, 31)
+	eq(s:label(2589), "Buy 20", "the quote ran out")
+	eq(s.server:count("SendSearchQuery"), searches + 1, "the held read went out")
+	eq(s:label(2001), "Buy", "and was answered")
 	noAddonErrors(s)
 end)
 

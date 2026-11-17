@@ -8,9 +8,9 @@ button, and the cheapest one is yours.
 
 ![The auction house browse list with Going Once's Buy column](docs/screenshots/buy-column.png)
 
-- **Gear and other single items:** hovering a row reads its auctions, and one click buys the cheapest at its
-  buyout price. It asks for a second click when the cheapest now costs more than the list shows, or costs at
-  least an amount you choose (50 gold to start with).
+- **Gear and other single items:** resting the mouse on a row reads its auctions, and one click buys the cheapest
+  at its buyout price. It asks for a second click when the cheapest now costs more than the list shows, or costs
+  at least an amount you choose (50 gold to start with).
 - **Trade goods:** the button says `Buy`, or `Buy 20` for a stack. A click asks the auction house for the price.
   If every unit costs what the list shows, that click buys; if they cost more, the button shows the total and
   the next click buys. Right-click or Shift-click the button to choose how many to buy, remembered for each item.
@@ -60,7 +60,9 @@ If Going Once saves you some clicks and you'd like to say thanks, you can
 Everything the addon runs is in `GoingOnce.lua`, plus the settings row template in `GoingOnce.xml`:
 
 - **Offers** (`Send`, `ReadItem`, `ReadCommodity`): reading a row's auctions, and what a read found.
-- **Hover**: reads start when the mouse is on a row.
+- **Hover** (`Rest`, `WatchPointer`): a row is read once the mouse rests on it. A sweep down the list, or a list
+  still scrolling under the mouse, reads nothing.
+- **Mute** (`Mute`, `Unmute`): Blizzard's list does not hear the refresh a hover read causes.
 - **Purchases** (`BuyItem`, `BuyCommodity`, `Confirm`, `GiveUp`): the one purchase in flight, from the click to
   the auction house's answer.
 - **Slots**: a row's button in the Buy column, its label and tooltip (`Slot:State`).
@@ -70,7 +72,7 @@ Everything the addon runs is in `GoingOnce.lua`, plus the settings row template 
 The auction house rules it is built on:
 
 - A browse row has no auction ID, and the server only takes a bid on an auction from the last item search sent.
-  So hovering a row searches that item, and a click on an older read only reads again.
+  So resting the mouse on a row searches that item, and a click on an older read only reads again.
 - `PlaceBid` and `StartCommoditiesPurchase` need a click (a hardware event); `ConfirmCommoditiesPurchase` does
   not, which is how a trade good buys on one click.
 - A search sent while a trade good's price quote is open spoils the quote ("Internal auction error"), so no read
@@ -78,8 +80,15 @@ The auction house rules it is built on:
 - An error from the auction house names no request, and the server sometimes answers a good purchase with one.
   So a purchase ends on its own answer (`AUCTION_HOUSE_PURCHASE_COMPLETED`, the "You won an auction"
   notification, or the commodity events), and on an error only when only a bid could have caused it.
-- Every item search makes the server refresh the browse list, and Blizzard scrolls it to the top; Going Once
-  puts the scroll position back.
+- Every item search makes the server refresh the browse list, and Blizzard draws the whole list again from the
+  top for each refresh: one hover read drew 57 rows in the tests, and a sweep down the list stuttered in game. So
+  Blizzard's browse frame is taken off the refresh event while a hover read is answered, with `UnregisterEvent`
+  and `RegisterEvent`, which leave Blizzard's Lua alone. The row keeps the price it had until the next search or
+  purchase, as it does without Going Once; the button and its tooltip show what the read found. A browse search,
+  or anyone else's request, puts the frame back on the event at once. For every refresh the list does hear,
+  Going Once puts the scroll position back.
+- Search queries are limited to 100 a minute, so a read waits for the mouse to rest (0.15 s on a row, 0.04 s on
+  its Buy button, and 0.25 s after the list last scrolled).
 - Nothing is written into Blizzard's tables. Blizzard sizes the browse table to the list's scroll box, so Going
   Once makes the scroll box a column narrower and Blizzard lays out the narrower table itself; the Buy column fills
   the space. Rows are followed with `hooksecurefunc` hooks on the list's table builder (`ArrangeCells`,

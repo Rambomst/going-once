@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.2.0
+
+- The list no longer stutters when you run the mouse over many rows or scroll with the mouse on it. A row is read
+  when the mouse rests on it, not while it passes over, and a read no longer makes the game draw the whole list
+  again.
+- A row keeps the price the list showed until your next search or purchase. If the cheapest one costs more by the
+  time you get to it, the Buy button turns orange and asks for a second click, as before.
+- A read that was still waiting its turn is dropped when the mouse leaves its row, so fewer searches count against
+  the auction house's limit.
+
 ## v1.1.1
 
 - Now also on [Wago Addons](https://addons.wago.io/addons/going-once). Nothing changes in game.
