@@ -9,10 +9,11 @@
 -- A search sent while a trade good's quote is open spoils it ("Internal auction error", seen by auxForever), so
 -- reads wait while a purchase is in flight.
 --
--- An auction house error names no request, and Forever's server sometimes answers a buyout with "Internal auction
--- error" within 30 ms and still sells the item 2 to 3 seconds later (2 of 7 logged gear buyouts, 2026-11-15 and
--- 16, nothing else sent in between). So a purchase ends on its own answer, and on an error only when that error
--- can only be a bid's.
+-- An auction house error names no request, and Forever's server answers a buyout whose price has copper in it with
+-- "Internal auction error" at once and still sells the item 2 to 3 seconds later: all 4 such buyouts logged in
+-- game and none of the 12 at a whole silver price (2026-11-15 to 18, nothing else sent in between). So a purchase
+-- ends on its own answer, and on an error only when that error can only be a bid's. Blizzard's frame does not get
+-- to flash the error such a price is known to draw (MuteErrors).
 --
 -- The buttons have a column of their own at the right. Blizzard sizes the browse table to the list's scroll box,
 -- so making that box a column narrower frees the space without touching Blizzard's table; rows are followed with
@@ -103,6 +104,8 @@ local ownSearchAt = -math.huge
 local listenUntil
 -- The one purchase in flight: { kind = "item" | "commodity", state = "quoting" | "quoted" | "buying", ... }.
 local purchase
+-- Whether Blizzard's auction house frame is kept from hearing errors (MuteErrors).
+local errorsMuted = false
 -- The last purchase given up on while buying, until LATE_SECONDS: its answer may still come.
 local late
 -- Gear waiting for a second click: { key, auctionID, untilTime }.
@@ -318,6 +321,35 @@ local function Listening()
 		listenUntil = nil
 	end
 	return listenUntil ~= nil
+end
+
+-- Blizzard's auction house frame flashes every error in red, and it registers for the event each time it is
+-- shown, so this is the same kind of engine call as Mute. While a bid at a price with copper is out, the errors
+-- that come are flashed from here instead (FlashError), all but the one such a price always draws.
+local ERROR_EVENT = "AUCTION_HOUSE_SHOW_ERROR"
+local COPPER_ERROR = Enum.AuctionHouseError.DatabaseError
+
+local function MuteErrors()
+	if not errorsMuted then
+		errorsMuted = true
+		AuctionHouseFrame:UnregisterEvent(ERROR_EVENT)
+	end
+end
+
+local function UnmuteErrors()
+	if not errorsMuted or (purchase and purchase.quiet) then
+		return
+	end
+	errorsMuted = false
+	-- Hidden, the frame listens for nothing.
+	if AuctionHouseFrame:IsShown() then
+		AuctionHouseFrame:RegisterEvent(ERROR_EVENT)
+	end
+end
+
+local function FlashError(code)
+	local r, g, b = RED_FONT_COLOR:GetRGB()
+	UIErrorsFrame:AddMessage(ErrorText(code), r, g, b, 1)
 end
 
 -- refresh: lets Blizzard's list hear this read's refresh, so the row shows what is left after a purchase.
@@ -547,6 +579,10 @@ local function Finish(p)
 		p.ticker = nil
 	end
 	Forget(p.offer)
+	if errorsMuted then
+		-- A frame later: an error being handed out right now must not reach Blizzard's frame as well.
+		C_Timer.After(0, UnmuteErrors)
+	end
 	-- A read held back during the purchase goes out now.
 	local waiting = queued
 	if not purchase and waiting and waiting.state == "loading" then
@@ -759,6 +795,10 @@ local function BuyItem(slot)
 	}
 	purchase = p
 	Log("bid", p.key, "auction", p.auctionID, "buyout", p.price, "last search", lastSearch)
+	if p.price % 100 ~= 0 then
+		p.quiet = true
+		MuteErrors()
+	end
 	C_AuctionHouse.PlaceBid(p.auctionID, p.price)
 	Timeout(p, PURCHASE_TIMEOUT)
 	Refresh(offer)
@@ -1746,6 +1786,12 @@ end
 function handlers.AUCTION_HOUSE_SHOW_ERROR(code)
 	local p = purchase
 	Log("event error", code, p and p.key, p and p.state)
+	if errorsMuted then
+		if p and p.quiet and code == COPPER_ERROR then
+			return
+		end
+		FlashError(code)
+	end
 	if not p or p.state == "quoted" then
 		return
 	end

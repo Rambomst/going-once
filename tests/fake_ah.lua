@@ -22,8 +22,9 @@ Fake.keyOf = keyOf
 -- spec.secondAnswer: seconds after its first answer that an item search is answered again (0.13 to 0.58 s in game,
 -- 2026-11-18). spec.browseAnswer: seconds until a browse search is answered (default: latency).
 -- spec.buyAnswer: seconds until a bid or confirm is answered (default: latency); spec.buySilent: never answered.
--- spec.strayError: an error code sent right after each bid or confirm that still goes through, as Forever's server
--- did on 2026-11-16.
+-- spec.strayError: an error code sent right after each bid or confirm that still goes through.
+-- A bid whose amount has copper in it is always answered with "Internal auction error" and still goes through, as
+-- on Forever's server (all 4 such buyouts logged in game, 2026-11-15 to 18). self.errors counts the errors sent.
 -- spec.wonNotice: a bought auction also gets the "You won an auction" notification; spec.noCompletedEvent drops
 -- AUCTION_HOUSE_PURCHASE_COMPLETED.
 function Fake.install(sim, spec)
@@ -33,6 +34,7 @@ function Fake.install(sim, spec)
 	self.money = spec.money or 1000000
 	self.throttleReady = true
 	self.calls = {}
+	self.errors = 0
 	self.queue = {}
 	self.searched = {}
 	self.lastSearch = nil
@@ -267,6 +269,7 @@ function Fake.install(sim, spec)
 		return true
 	end)
 	local function refuse(code)
+		self.errors = self.errors + 1
 		self:after(function()
 			self:fire("AUCTION_HOUSE_SHOW_ERROR", code)
 		end)
@@ -301,6 +304,9 @@ function Fake.install(sim, spec)
 						return refuse(errors.HigherBid)
 					elseif amount > self.money then
 						return refuse(errors.NotEnoughMoney)
+					end
+					if amount % 100 ~= 0 then
+						refuse(errors.DatabaseError)
 					end
 					table.remove(item.auctions, i)
 					self.money = self.money - amount

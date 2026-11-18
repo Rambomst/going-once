@@ -40,9 +40,13 @@ In Options, AddOns, Going Once, or type `/goingonce`:
 
 ## "Internal auction error"
 
-Forever's auction house sometimes flashes "Internal auction error" in red for a purchase that goes through a
-moment later. Going Once waits for the purchase's own answer, so the chat line says it was bought (and that the
-message did not stop it). If no answer comes, the chat says to check your mail before buying again.
+Forever's auction house answers a gear buyout whose price has copper in it (say 35s 98c) with a red "Internal
+auction error", and sells the item anyway a few seconds later. Going Once does not show that message for its own
+purchases: the Buy button waits for the real answer, and the chat line says what was bought. The game's own Buyout
+button sends the same request, so the message may still show there.
+
+If a purchase really fails, the chat says why. If no answer comes at all, it says to check your mail before buying
+again.
 
 ## Bugs and ideas
 
@@ -77,9 +81,12 @@ The auction house rules it is built on:
   not, which is how a trade good buys on one click.
 - A search sent while a trade good's price quote is open spoils the quote ("Internal auction error"), so no read
   goes out while a purchase is in flight.
-- An error from the auction house names no request, and the server sometimes answers a good purchase with one.
-  So a purchase ends on its own answer (`AUCTION_HOUSE_PURCHASE_COMPLETED`, the "You won an auction"
-  notification, or the commodity events), and on an error only when only a bid could have caused it.
+- An error from the auction house names no request, and the server answers a buyout whose price has copper in it
+  with "Internal auction error" before it sells the item (every such buyout logged in game, and none at a whole
+  silver price). So a purchase ends on its own answer (`AUCTION_HOUSE_PURCHASE_COMPLETED`, the "You won an
+  auction" notification, or the commodity events), and on an error only when only a bid could have caused it.
+  While such a bid is out, Blizzard's frame does not hear errors (`MuteErrors`): the expected one is dropped and
+  any other is flashed by the addon.
 - Every item search makes the server refresh the browse list, and Blizzard draws the whole list again from the
   top for each refresh: one hover read drew 57 rows in the tests, and a sweep down the list stuttered in game. So
   Blizzard's browse frame is taken off the refresh event while a hover read is answered, with `UnregisterEvent`

@@ -125,7 +125,7 @@ local function open(opts)
 	end
 	local spec = deepcopy(SPEC)
 	for k, v in pairs(opts.spec or {}) do
-		spec[k] = v
+		spec[k] = deepcopy(v)
 	end
 	local server = Fake.install(sim, spec)
 	if opts.prepare then
@@ -232,6 +232,17 @@ function Session:countRows()
 		end)
 	end)
 	return count
+end
+
+-- Collects the red error lines flashed from here on, whoever flashes them.
+function Session:watchErrors()
+	local lines = {}
+	self.sim.run(function()
+		self.G.hooksecurefunc(self.G.UIErrorsFrame, "AddMessage", function(_, text)
+			lines[#lines + 1] = text
+		end)
+	end)
+	return lines
 end
 
 -- Color codes, links and money textures turned into plain text, e.g. "1g 50s 20c".
@@ -1148,8 +1159,10 @@ end)
 -- then sold the item 2 to 3 seconds later.
 test("a buyout the server answers with an error still goes through, and chat says so", function()
 	local s = open({ spec = { strayError = 10, buyAnswer = 2.5, wonNotice = true } })
+	local flashed = s:watchErrors()
 	s:hoverButton(2001)
 	s:click(2001, nil, 1)
+	eq(#flashed, 1, "an error nothing explains is flashed as ever")
 	eq(s:label(2001), "...", "still waiting for the bid's answer")
 	eq(s:chat():find("refused", 1, true), nil, "no refusal: " .. s:chat())
 	s.server:tick(2)
@@ -1157,6 +1170,86 @@ test("a buyout the server answers with an error still goes through, and chat say
 	ok(s:chat():find('The "Internal auction error" message did not stop it.', 1, true), "explains: " .. s:chat())
 	eq(s:chat():find("Nothing was bought", 1, true), nil, "no false claim: " .. s:chat())
 	eq(s.server.money, 98 * GOLD, "paid")
+	noAddonErrors(s)
+end)
+
+-- In game (2026-11-15 to 18): all 4 logged buyouts at a price with copper in it drew "Internal auction error" and
+-- were sold 2 to 3 seconds later; none of the 12 at a whole silver price did.
+local COPPER_PRICED = {
+	{
+		itemID = 2001,
+		name = "Test Sword",
+		auctions = { { id = 101, buyout = 2 * GOLD + 98 }, { id = 102, buyout = 3 * GOLD } },
+	},
+}
+
+test("a buyout at a price with copper does not flash the error the server always answers it with", function()
+	local s = open({ spec = { items = COPPER_PRICED, buyAnswer = 2.5, wonNotice = true } })
+	local flashed = s:watchErrors()
+	s:hoverButton(2001)
+	s:click(2001, nil, 1)
+	eq(s.server:count("PlaceBid"), 1, "bid sent")
+	eq(s.server.errors, 1, "the server sent its error")
+	eq(#flashed, 0, "nothing flashed: " .. table.concat(flashed, " / "))
+	eq(s:label(2001), "...", "still waiting for the bid's answer")
+	s.server:tick(2)
+	ok(s:chat():find("bought .*Test Sword.* for 2g"), "bought line: " .. s:chat())
+	eq(s:chat():find("did not stop it", 1, true), nil, "no word about a message nobody saw: " .. s:chat())
+	eq(#flashed, 0, "nothing flashed afterwards either")
+	eq(s.server.money, 98 * GOLD - 98, "paid")
+	noAddonErrors(s)
+end)
+
+test("other errors still flash, once each, during and after a buyout at a price with copper", function()
+	local s = open({ spec = { items = COPPER_PRICED, buyAnswer = 2.5 } })
+	local flashed = s:watchErrors()
+	local busy = s.G.Enum.AuctionHouseError.IsBusy
+	s:hoverButton(2001)
+	s:click(2001, nil, 1)
+	s.server:fire("AUCTION_HOUSE_SHOW_ERROR", busy)
+	eq(#flashed, 1, "flashed once while the bid is out: " .. table.concat(flashed, " / "))
+	s.server:tick(2)
+	ok(s:chat():find("bought .*Test Sword"), "bought: " .. s:chat())
+	s.server:fire("AUCTION_HOUSE_SHOW_ERROR", busy)
+	eq(#flashed, 2, "and once after it, by Blizzard's frame again")
+	s.server:fire("AUCTION_HOUSE_SHOW_ERROR", 10)
+	eq(#flashed, 3, "the internal error too, now that no bid explains it")
+	noAddonErrors(s)
+end)
+
+test("a refused buyout at a price with copper still flashes why", function()
+	local s = open({ spec = { items = COPPER_PRICED } })
+	local flashed = s:watchErrors()
+	s:hoverButton(2001)
+	table.remove(s.server.items["2001:0:0:0"].auctions, 1)
+	s:click(2001)
+	eq(s.server:count("PlaceBid"), 1, "bid sent")
+	eq(#flashed, 1, "flashed once: " .. table.concat(flashed, " / "))
+	ok(s:chat():find("refused that purchase", 1, true), "chat says so: " .. s:chat())
+	s.server:fire("AUCTION_HOUSE_SHOW_ERROR", 10)
+	eq(#flashed, 2, "Blizzard's frame hears errors again")
+	noAddonErrors(s)
+end)
+
+test("closing the auction house during a buyout at a price with copper leaves errors flashing", function()
+	local s = open({ spec = { items = COPPER_PRICED, buyAnswer = 2.5 } })
+	local flashed = s:watchErrors()
+	s:hoverButton(2001)
+	s:click(2001, nil, 0.2)
+	s.sim.run(function()
+		s.G.HideUIPanel(s.G.AuctionHouseFrame)
+	end)
+	s.server:fire("AUCTION_HOUSE_CLOSED")
+	s.server:tick(3)
+	eq(
+		s.G.AuctionHouseFrame:IsEventRegistered("AUCTION_HOUSE_SHOW_ERROR"),
+		false,
+		"closed, Blizzard's frame listens for nothing"
+	)
+	s.sim:showPanel(s.G.AuctionHouseFrame)
+	s.server:tick(0.2)
+	s.server:fire("AUCTION_HOUSE_SHOW_ERROR", 10)
+	eq(#flashed, 1, "open again, it flashes errors: " .. table.concat(flashed, " / "))
 	noAddonErrors(s)
 end)
 

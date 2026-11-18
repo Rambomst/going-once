@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.1
+
+- The red "Internal auction error" no longer flashes when you buy gear whose price has copper in it. The auction
+  house sends it for every such buyout and sells the item anyway, so the message meant nothing. A purchase that
+  really fails still says why.
+
 ## v1.2.0
 
 - The list no longer stutters when you run the mouse over many rows or scroll with the mouse on it. A row is read
